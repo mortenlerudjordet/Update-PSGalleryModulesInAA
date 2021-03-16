@@ -475,7 +475,7 @@ try
                         else
                         {
                             $LatestModuleVersionOnPSGallery = $SearchResult.Version
-                            if($ModuleVersionInAutomation)
+                            if($ModuleVersionInAutomation -and $Module.ProvisioningState -eq "Succeeded")
                             {
                                 if($ModuleVersionInAutomation -ne $LatestModuleVersionOnPSGallery)
                                 {
@@ -494,7 +494,14 @@ try
                             }
                             else
                             {
-                                Write-Warning -Message "Module '$ModuleName' in automation account has no version data. Skipping update" -WarningAction Continue
+                                if($Module.ProvisioningState -ne "Succeeded")
+                                {
+                                    Write-Error -Message "Module '$ModuleName' has previous failed, skipping update of module" -ErrorAction Continue
+                                }
+                                else
+                                {
+                                    Write-Warning -Message "Module '$ModuleName' in automation account has no version data. Skipping update of module" -WarningAction Continue
+                                }
                             }
                         }
                     }
