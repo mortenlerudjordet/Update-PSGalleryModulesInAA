@@ -496,7 +496,7 @@ try
                             {
                                 if($Module.ProvisioningState -eq "Failed")
                                 {
-                                    Write-Error -Message "Module '$ModuleName' import has previous failed, skipping update of module" -ErrorAction Continue
+                                    Write-Error -Message "Module '$ModuleName' import has previously failed, skipping update of module" -ErrorAction Continue
                                 }
                                 else
                                 {
