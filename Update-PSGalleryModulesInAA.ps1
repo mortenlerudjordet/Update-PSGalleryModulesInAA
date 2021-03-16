@@ -468,27 +468,33 @@ try
                     }
                     if($UpdateModule)
                     {
-                        if(!$SearchResult)
+                        if(-not $SearchResult)
                         {
                             Write-Output -InputObject "Could not find module '$ModuleName' on PowerShell Gallery. This may be a module imported from a different location"
                         }
                         else
                         {
                             $LatestModuleVersionOnPSGallery = $SearchResult.Version
-
-                            if($ModuleVersionInAutomation -ne $LatestModuleVersionOnPSGallery)
+                            if($ModuleVersionInAutomation)
                             {
-                                Write-Output -InputObject "Module '$ModuleName' is not up to date. Latest version on PS Gallery is '$LatestModuleVersionOnPSGallery' but this automation account has version '$ModuleVersionInAutomation'"
-                                Write-Output -InputObject "Importing latest version of '$ModuleName' into your automation account"
+                                if($ModuleVersionInAutomation -ne $LatestModuleVersionOnPSGallery)
+                                {
+                                    Write-Output -InputObject "Module '$ModuleName' is not up to date. Latest version on PS Gallery is '$LatestModuleVersionOnPSGallery' but this automation account has version '$ModuleVersionInAutomation'"
+                                    Write-Output -InputObject "Importing latest version of '$ModuleName' into your automation account"
 
-                                doModuleImport `
-                                    -AutomationResourceGroupName $AutomationResourceGroupName `
-                                    -AutomationAccountName $AutomationAccountName `
-                                    -ModuleName $ModuleName
+                                    doModuleImport `
+                                        -AutomationResourceGroupName $AutomationResourceGroupName `
+                                        -AutomationAccountName $AutomationAccountName `
+                                        -ModuleName $ModuleName
+                                }
+                                else
+                                {
+                                    Write-Output -InputObject "Module '$ModuleName' is up to date."
+                                }
                             }
                             else
                             {
-                                Write-Output -InputObject "Module '$ModuleName' is up to date."
+                                Write-Warning -Message "Module '$ModuleName' in automation account has no version data. Skipping update" -WarningAction Continue
                             }
                         }
                     }
