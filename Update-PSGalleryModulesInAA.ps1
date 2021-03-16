@@ -475,7 +475,7 @@ try
                         else
                         {
                             $LatestModuleVersionOnPSGallery = $SearchResult.Version
-                            if($ModuleVersionInAutomation -and $Module.ProvisioningState -eq "Succeeded")
+                            if($ModuleVersionInAutomation -and $Module.ProvisioningState -ne "Failed")
                             {
                                 if($ModuleVersionInAutomation -ne $LatestModuleVersionOnPSGallery)
                                 {
@@ -494,9 +494,9 @@ try
                             }
                             else
                             {
-                                if($Module.ProvisioningState -ne "Succeeded")
+                                if($Module.ProvisioningState -eq "Failed")
                                 {
-                                    Write-Error -Message "Module '$ModuleName' has previous failed, skipping update of module" -ErrorAction Continue
+                                    Write-Error -Message "Module '$ModuleName' import has previous failed, skipping update of module" -ErrorAction Continue
                                 }
                                 else
                                 {
