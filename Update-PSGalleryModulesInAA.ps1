@@ -28,6 +28,10 @@
     Optional. Set to $false to have logic try to update all modules installed in account.
     Default is $true, and this will only update Azure modules. Both AzureRM and Az if present in Automation account
 
+.PARAMETER Force
+    Optional. Set to $true to force update of failed module updates also
+    Default is $false
+
 .PARAMETER DebugLocal
     Optional. Set to $true if debugging script locally to switch of logic that tries to discover the Automation account it is running in
     Default is $false
@@ -52,6 +56,9 @@ param(
 
     [Parameter(Mandatory = $false)]
     [Bool] $UpdateAzureModulesOnly = $true,
+
+    [Parameter(Mandatory = $false)]
+    [Bool] $Force = $false,
 
     [Parameter(Mandatory = $false)]
     [switch] $DebugLocal = $false
@@ -475,7 +482,7 @@ try
                         else
                         {
                             $LatestModuleVersionOnPSGallery = $SearchResult.Version
-                            if($ModuleVersionInAutomation -and $Module.ProvisioningState -ne "Failed")
+                            if( $ModuleVersionInAutomation -and ($Module.ProvisioningState -ne "Failed" -or $Force -eq $true) )
                             {
                                 if($ModuleVersionInAutomation -ne $LatestModuleVersionOnPSGallery)
                                 {
