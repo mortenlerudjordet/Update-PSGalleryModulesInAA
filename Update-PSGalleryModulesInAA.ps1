@@ -44,7 +44,7 @@
 .NOTES
     AUTHOR:         Automation Team
     CONTRIBUTOR:    Morten Lerudjordet
-    LASTEDIT:       09.06.2019
+    LASTEDIT:       11.08.2022
 #>
 
 param(
