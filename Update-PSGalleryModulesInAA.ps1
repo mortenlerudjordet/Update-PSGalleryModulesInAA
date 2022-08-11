@@ -29,7 +29,7 @@
     Default is $true, and this will only update Azure modules. Both AzureRM and Az if present in Automation account
 
 .PARAMETER Force
-    Optional. Set to $true to force update of failed module updates also
+    Optional. Set to $true to force install of failed module updates.
     Default is $false
 
 .PARAMETER DebugLocal
