@@ -29,7 +29,7 @@
     Default is $true, and this will only update Azure modules. Both AzureRM and Az if present in Automation account
 
 .PARAMETER Force
-    Optional. Set to $true to force install of failed module updates.
+    Optional. Set to $true to force update of failed module updates also
     Default is $false
 
 .PARAMETER DebugLocal
@@ -44,7 +44,7 @@
 .NOTES
     AUTHOR:         Automation Team
     CONTRIBUTOR:    Morten Lerudjordet
-    LASTEDIT:       11.08.2022
+    LASTEDIT:       31.08.2022
 #>
 
 param(
@@ -232,6 +232,8 @@ function doModuleImport
                                 -AutomationAccountName $AutomationAccountName `
                                 -Name $DependencyName `
                                 -ErrorAction SilentlyContinue
+                            # Filter out Global modules
+                            $AutomationModule = $AutomationModule | Where-Object { $PsItem.IsGlobal -eq $false }
                             # Do not downgrade version of module if newer exists in Automation account (limitation of AA that one can only have only one version of a module imported)
                             # limit also recursion depth of dependencies search
                             if( ($script:RecursionDepth -le $script:RecursionDepthLimit) -and ((-not $AutomationModule) -or [System.Version]$AutomationModule.Version -lt [System.Version]$DependencyVersion) )
@@ -420,100 +422,91 @@ try
     {
         foreach($Module in $Modules)
         {
-            $Module = Get-AzureRmAutomationModule `
-                -ResourceGroupName $AutomationResourceGroupName `
-                -AutomationAccountName $AutomationAccountName `
-                -Name $Module.Name -ErrorAction continue -ErrorVariable oErr
+            $ModuleName = $Module.Name
+            $ModuleVersionInAutomation = $Module.Version
+
+            $Filter = @($ModuleName.Trim('*').Split('*') | ForEach-Object { "substringof('$_',Id)" }) -join " and "
+            $Url = "$script:PsGalleryApiUrl/Packages?`$filter=$Filter and IsLatestVersion"
+
+            # Fetch results and filter them with -like, and then shape the output
+            $SearchResult = Invoke-RestMethod -Method Get -Uri $Url -ErrorAction Continue -ErrorVariable oErr | Where-Object { $_.title.'#text' -like $ModuleName } |
+                Select-Object @{n = 'Name'; ex = {$_.title.'#text'}},
+            @{n = 'Version'; ex = {$_.properties.version}},
+            @{n = 'Url'; ex = {$_.Content.src}},
+            @{n = 'Dependencies'; ex = {$_.properties.Dependencies}},
+            @{n = 'Owners'; ex = {$_.properties.Owners}}
             if($oErr)
             {
-                Write-Error -Message "Failed to retrieve module: $($Module.Name) from AA account: $AutomationAccountName. Skipping update of this module." -ErrorAction Continue
+                Write-Error -Message "Failed to query Gallery for module $ModuleName" -ErrorAction Continue
                 $oErr = $Null
             }
-            else
+            if($SearchResult)
             {
-                $ModuleName = $Module.Name
-                $ModuleVersionInAutomation = $Module.Version
-
-                $Filter = @($ModuleName.Trim('*').Split('*') | ForEach-Object { "substringof('$_',Id)" }) -join " and "
-                $Url = "$script:PsGalleryApiUrl/Packages?`$filter=$Filter and IsLatestVersion"
-
-                # Fetch results and filter them with -like, and then shape the output
-                $SearchResult = Invoke-RestMethod -Method Get -Uri $Url -ErrorAction Continue -ErrorVariable oErr | Where-Object { $_.title.'#text' -like $ModuleName } |
-                    Select-Object @{n = 'Name'; ex = {$_.title.'#text'}},
-                @{n = 'Version'; ex = {$_.properties.version}},
-                @{n = 'Url'; ex = {$_.Content.src}},
-                @{n = 'Dependencies'; ex = {$_.properties.Dependencies}},
-                @{n = 'Owners'; ex = {$_.properties.Owners}}
-                if($oErr)
+                # Should not be needed anymore, though in the event of the search returning more than one hit this will strip it down
+                if($SearchResult.Length -and $SearchResult.Length -gt 1)
                 {
-                    Write-Error -Message "Failed to query Gallery for module $ModuleName" -ErrorAction Continue
-                    $oErr = $Null
+                    $SearchResult = $SearchResult | Where-Object -FilterScript {
+                        return $_.Name -eq $ModuleName
+                    }
                 }
-                if($SearchResult)
+
+                $UpdateModule = $false
+                if($UpdateAzureModulesOnly)
                 {
-                    # Should not be needed anymore, though in the event of the search returning more than one hit this will strip it down
-                    if($SearchResult.Length -and $SearchResult.Length -gt 1)
+                    if($SearchResult.Owners -eq $script:AzureSdkOwnerName)
                     {
-                        $SearchResult = $SearchResult | Where-Object -FilterScript {
-                            return $_.Name -eq $ModuleName
-                        }
-                    }
-
-                    $UpdateModule = $false
-                    if($UpdateAzureModulesOnly)
-                    {
-                        if($SearchResult.Owners -eq $script:AzureSdkOwnerName)
-                        {
-                            Write-Output -InputObject "Checking if module '$ModuleName' is up to date in your automation account"
-                            $UpdateModule = $true
-                        }
-                    }
-                    else
-                    {
-                        Write-Output -InputObject "Checking if module '$ModuleName' is up to date in your automation account"
+                        Write-Output -InputObject "Checking if azure module '$ModuleName' is up to date in your automation account"
                         $UpdateModule = $true
-                    }
-                    if($UpdateModule)
-                    {
-                        if(-not $SearchResult)
-                        {
-                            Write-Output -InputObject "Could not find module '$ModuleName' on PowerShell Gallery. This may be a module imported from a different location"
-                        }
-                        else
-                        {
-                            $LatestModuleVersionOnPSGallery = $SearchResult.Version
-                            if( $ModuleVersionInAutomation -and ($Module.ProvisioningState -ne "Failed" -or $Force -eq $true) )
-                            {
-                                if($ModuleVersionInAutomation -ne $LatestModuleVersionOnPSGallery)
-                                {
-                                    Write-Output -InputObject "Module '$ModuleName' is not up to date. Latest version on PS Gallery is '$LatestModuleVersionOnPSGallery' but this automation account has version '$ModuleVersionInAutomation'"
-                                    Write-Output -InputObject "Importing latest version of '$ModuleName' into your automation account"
-
-                                    doModuleImport `
-                                        -AutomationResourceGroupName $AutomationResourceGroupName `
-                                        -AutomationAccountName $AutomationAccountName `
-                                        -ModuleName $ModuleName
-                                }
-                                else
-                                {
-                                    Write-Output -InputObject "Module '$ModuleName' is up to date."
-                                }
-                            }
-                            else
-                            {
-                                if($Module.ProvisioningState -eq "Failed")
-                                {
-                                    Write-Error -Message "Module '$ModuleName' import has previously failed, skipping update of module" -ErrorAction Continue
-                                }
-                                else
-                                {
-                                    Write-Warning -Message "Module '$ModuleName' in automation account has no version data. Skipping update of module" -WarningAction Continue
-                                }
-                            }
-                        }
                     }
                 }
                 else
+                {
+                    Write-Output -InputObject "Checking if module '$ModuleName' is up to date in your automation account"
+                    $UpdateModule = $true
+                }
+                if($UpdateModule)
+                {
+                    if(-not $SearchResult)
+                    {
+                        Write-Output -InputObject "Could not find module '$ModuleName' on PowerShell Gallery. This may be a module imported from a different location"
+                    }
+                    else
+                    {
+                        $LatestModuleVersionOnPSGallery = $SearchResult.Version
+                        if( $Module.ProvisioningState -ne "Failed" -or $Force -eq $true )
+                        {
+                            if( ($ModuleVersionInAutomation -ne $LatestModuleVersionOnPSGallery) -or ($Module.ProvisioningState -eq "Failed" -and $Force -eq $true) )
+                            {
+                                Write-Output -InputObject "Module '$ModuleName' is not up to date. Latest version on PS Gallery is '$LatestModuleVersionOnPSGallery' but this automation account has version '$ModuleVersionInAutomation'"
+                                Write-Output -InputObject "Importing latest version of '$ModuleName' into your automation account"
+
+                                doModuleImport `
+                                    -AutomationResourceGroupName $AutomationResourceGroupName `
+                                    -AutomationAccountName $AutomationAccountName `
+                                    -ModuleName $ModuleName
+                            }
+                            else
+                            {
+                                Write-Output -InputObject "Module '$ModuleName' is up to date."
+                            }
+                        }
+                        else
+                        {
+                            if($Module.ProvisioningState -eq "Failed")
+                            {
+                                Write-Error -Message "Module '$ModuleName' import has previously failed, skipping update of module" -ErrorAction Continue
+                            }
+                            else
+                            {
+                                Write-Warning -Message "Module '$ModuleName' in automation account has no version data. Skipping update of module" -WarningAction Continue
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                if( -not $UpdateAzureModulesOnly )
                 {
                     Write-Output -InputObject "No result from querying PS Gallery for module: $ModuleName"
                 }
