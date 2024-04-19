@@ -5,14 +5,14 @@
 
     Use Import-PSGalleryModulesToAA for first time import of Az module (takes a long time to import all submodules).
 
+    NOTE:
+        As this introduces runtime version support, before running make sure Az.Accounts, Az.Automation and Az.Resources are updated to the latest version
+        on both 5.1 and 7.2 runtime before running this.
+
 .DESCRIPTION
     This Azure Automation Runbook imports the latest version from PowerShell Gallery of all modules in an
     Automation account. By connecting the Runbook to an Automation schedule, you can ensure all modules in
     your Automation account stay up to date. Or only update the Azure modules
-
-    NOTE:
-    This module can not be run locally without the use of Automation ISE-addon
-    URL: https://github.com/azureautomation/azure-automation-ise-addon
 
 .PARAMETER AutomationResourceGroupName
     Optional. The name of the Azure Resource Group containing the Automation account to update all modules for.
@@ -28,9 +28,17 @@
     Optional. Set to $false to have logic try to update all modules installed in account.
     Default is $true, and this will only update Azure modules. Both AzureRM and Az if present in Automation account
 
+.PARAMETER AutomationRuntime
+    What module library to target.
+    Valid inputs are 5.1 and 7.2, representing either PS 5.1 modules or 7.2 modules.
+    Default is 5.1
+
 .PARAMETER Force
-    Optional. Set to $true to force update of failed module updates also
+    Optional. Set to $true to force update of all modules, also previous failed module updates
     Default is $false
+
+.PARAMETER UseMSI
+    Optional. Use Managed Service Identity instead of legacy RunAs account
 
 .PARAMETER DebugLocal
     Optional. Set to $true if debugging script locally to switch of logic that tries to discover the Automation account it is running in
@@ -44,7 +52,7 @@
 .NOTES
     AUTHOR:         Automation Team
     CONTRIBUTOR:    Morten Lerudjordet
-    LASTEDIT:       31.08.2022
+    LASTEDIT:       19.04.2024
 #>
 
 param(
@@ -58,14 +66,21 @@ param(
     [Bool] $UpdateAzureModulesOnly = $true,
 
     [Parameter(Mandatory = $false)]
+    [ValidateSet("5.1","7.2")]
+    [string] $AutomationRuntime = "7.2",
+
+    [Parameter(Mandatory = $false)]
     [Bool] $Force = $false,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$UseMSI = $true,
 
     [Parameter(Mandatory = $false)]
     [switch] $DebugLocal = $false
 )
 $VerbosePreference = "silentlycontinue"
 $RunbookName = "Update-PSGalleryModulesInAA"
-Write-Output -InputObject "Starting Runbook: $RunbookName at time: $(get-Date -format r).`nRunning PS version: $($PSVersionTable.PSVersion)`nOn host: $($env:computername)`nLocale:$((Get-WinSystemLocale).name)"
+Write-Output -InputObject "Starting Runbook: $RunbookName at time: $(get-Date -format r).`nRunning PS version: $($PSVersionTable.PSVersion)`nOn host: $($env:computername)`nLocale: $([system.threading.thread]::currentthread.currentculture)"
 
 #region Import Modules
 # Prefer to use Az module if available
@@ -126,7 +141,7 @@ $VerbosePreference = "continue"
 #endregion
 
 #region Variables
-$script:ModulesImported = @()
+$script:ModulesImported = [System.Collections.ArrayList]@()
 # track depth of module dependencies import
 $script:RecursionDepth = 0
 # Make sure not to try to import dependencies of dependencies, like AzureRM module where some of the sub modules have different version dependencies on AzureRM.Accounts
@@ -230,6 +245,7 @@ function doModuleImport
                             $AutomationModule = Get-AzureRMAutomationModule `
                                 -ResourceGroupName $AutomationResourceGroupName `
                                 -AutomationAccountName $AutomationAccountName `
+                                -RuntimeVersion $AutomationRuntime `
                                 -Name $DependencyName `
                                 -ErrorAction SilentlyContinue
                             # Filter out Global modules
@@ -248,7 +264,7 @@ function doModuleImport
                                     -ModuleVersion $DependencyVersion -ErrorAction Continue
                                 # Register module has been imported
                                 # TODO: If module import fails, do not add and remove the failed imported module from AA account
-                                $script:ModulesImported += $DependencyName
+                                $null = $script:ModulesImported.Add($DependencyName)
                                 $script:RecursionDepth --
                             }
                             else
@@ -268,9 +284,39 @@ function doModuleImport
             do
             {
                 $ActualUrl = $ModuleContentUrl
-                $ModuleContentUrl = (Invoke-WebRequest -Uri $ModuleContentUrl -MaximumRedirection 0 -UseBasicParsing -ErrorAction SilentlyContinue).Headers.Location
+                # In PS 7.1 settting -MaximumRedirection 0 will throw an termination error
+                if( $PSVersionTable.PSVersion.Major -eq 7 )
+                {
+                    Write-Verbose -Message "Running under PS 7 or newer"
+                    try
+                    {
+                        $Content = Invoke-WebRequest -Uri $ModuleContentUrl -MaximumRedirection 0 -SkipHttpErrorCheck -ErrorAction Ignore
+                    }
+                    catch
+                    {
+                        Write-Verbose -Message "Invoke-WebRequest termination error detected"
+                    }
+                }
+                else
+                {
+                    Write-Verbose -Message "Running under PS 5.1"
+                    $Content = Invoke-WebRequest -Uri $ModuleContentUrl -MaximumRedirection 0 -UseBasicParsing -ErrorAction Ignore
+                }
+                [String]$ModuleContentUrl = $Content.Headers.Location
+                Write-Verbose -Message "Module content location URL found inside loop is: $ModuleContentUrl"
             }
-            while(-not ($ModuleContentUrl.Contains(".nupkg")) )
+            while( $ModuleContentUrl -notmatch ".nupkg" -or [string]::IsNullOrEmpty($ModuleContentUrl) )
+
+            Write-Verbose -Message "Do/While loop ended"
+
+            if( [string]::IsNullOrEmpty($ModuleContentUrl) )
+            {
+                Write-Error -Message "Fetching module content URL returned empty value." -ErrorAction Stop
+            }
+            else
+            {
+                Write-Verbose -Message "Final Module content location URL is: $ModuleContentUrl"
+            }
 
             $ActualUrl = $ModuleContentUrl
 
@@ -288,6 +334,7 @@ function doModuleImport
                     -ResourceGroupName $AutomationResourceGroupName `
                     -AutomationAccountName $AutomationAccountName `
                     -Name $ModuleName `
+                    -RuntimeVersion $AutomationRuntime `
                     -ContentLink $ActualUrl -ErrorAction continue
                 $oErr = $null
                 while(
@@ -345,31 +392,50 @@ function doModuleImport
 #region Main
 try
 {
-    $RunAsConnection = Get-AutomationConnection -Name "AzureRunAsConnection" -ErrorAction Stop
+    $RunAsConnection = Get-AutomationConnection -Name "AzureRunAsConnection"
     if($RunAsConnection)
     {
-        Write-Output -InputObject "Logging in to Azure..."
-
-        $Null = Add-AzureRmAccount `
-            -ServicePrincipal `
-            -TenantId $RunAsConnection.TenantId `
-            -ApplicationId $RunAsConnection.ApplicationId `
-            -CertificateThumbprint $RunAsConnection.CertificateThumbprint -ErrorAction Continue -ErrorVariable oErr
-        if($oErr)
+        Write-Output -InputObject ("Logging in to Azure...")
+        if( $UseMSI )
         {
-            Write-Error -Message "Failed to connect to Azure" -ErrorAction Stop
+            $Null = Add-AzureRMAccount -Identity -ErrorAction Continue -ErrorVariable oErr
+            if($oErr)
+            {
+                Write-Error -Message "Failed to connect to Azure Resource Manager using Managed Service Identity" -ErrorAction Stop
+            }
         }
-        $Subscription = Select-AzureRmSubscription -SubscriptionId $RunAsConnection.SubscriptionID -ErrorAction Continue -ErrorVariable oErr
-        Write-Output -InputObject "Running in subscription: $($Subscription.Subscription.Name)"
+        else
+        {
+            $Null = Add-AzureRMAccount `
+                -ServicePrincipal `
+                -TenantId $RunAsConnection.TenantId `
+                -ApplicationId $RunAsConnection.ApplicationId `
+                -CertificateThumbprint $RunAsConnection.CertificateThumbprint -ErrorAction Continue -ErrorVariable oErr
+            if($oErr)
+            {
+                Write-Error -Message "Failed to connect to Azure using legacy RunAs account" -ErrorAction Stop
+            }
+        }
+
+        Write-Verbose -Message "Selecting subscription to use"
+        $Subscription = Select-AzureRMSubscription -SubscriptionId $RunAsConnection.SubscriptionID -TenantId $RunAsConnection.TenantId -ErrorAction Continue -ErrorVariable oErr
         if($oErr)
         {
             Write-Error -Message "Failed to select Azure subscription" -ErrorAction Stop
+        }
+        else
+        {
+            Write-Output -InputObject "Running in subscription: $($Subscription.Subscription.Name) and tenantId: $($Subscription.Tenant.Id)"
         }
         if(-not $DebugLocal)
         {
             # Find the automation account or resource group is not specified
             if  (([string]::IsNullOrEmpty($AutomationResourceGroupName)) -or ([string]::IsNullOrEmpty($AutomationAccountName)))
             {
+                if( $PSVersionTable.PSVersion.Major -eq 7 )
+                {
+                    Write-Error -Message "Powershell 7 does not support metode used to find AA account. Populate AutomationResourceGroupName and AutomationAccountName then run again."  -ErrorAction Stop
+                }
                 Write-Verbose -Message ("Finding the ResourceGroup and AutomationAccount that this job is running in ...")
                 if ([string]::IsNullOrEmpty($PSPrivateMetadata.JobId.Guid))
                 {
@@ -413,7 +479,9 @@ try
 
     $Modules = Get-AzureRmAutomationModule `
         -ResourceGroupName $AutomationResourceGroupName `
-        -AutomationAccountName $AutomationAccountName -ErrorAction continue -ErrorVariable oErr
+        -AutomationAccountName $AutomationAccountName `
+        -RuntimeVersion $AutomationRuntime `
+        -ErrorAction continue -ErrorVariable oErr
     if($oErr)
     {
         Write-Error -Message "Failed to retrieve modules in AA account $AutomationAccountName" -ErrorAction Stop
