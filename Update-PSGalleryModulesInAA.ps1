@@ -86,6 +86,9 @@ $RunbookName = "Update-PSGalleryModulesInAA"
 Write-Output -InputObject "Starting Runbook: $RunbookName at time: $(get-Date -format r).`nRunning PS version: $($PSVersionTable.PSVersion)`nOn host: $($env:computername)`nLocale: $([system.threading.thread]::currentthread.currentculture)"
 
 #region Import Modules
+# Make sure Azure Automation internal modules are available
+Write-Output -InputObject "Checking Automation.Sandbox.AssetManagement.Cmdlets available"
+Import-Module -Name Automation.Sandbox.AssetManagement.Cmdlets -Scope Local -Force -ErrorAction Stop
 # Prefer to use Az module if available
 if((Get-Module -Name "Az.Accounts" -ListAvailable) -and (Get-Module -Name "Az.Automation" -ListAvailable) -and (Get-Module -Name "Az.Resources" -ListAvailable))
 {
